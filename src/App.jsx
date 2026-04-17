@@ -617,6 +617,8 @@ function ProjectDetail() {
   const [deleteMilestone, setDeleteMilestone] = useState(null)
   const [deleteRisk, setDeleteRisk] = useState(null)
   const [tab, setTab] = useState('dashboard')
+  const [showEditProject, setShowEditProject] = useState(false)
+  const [dashDrill, setDashDrill] = useState(null) // { title, items, type:'milestones'|'risks' }
 
   const fetchAll = useCallback(async () => {
     const [{ data: p }, { data: m }, { data: r }] = await Promise.all([
@@ -640,6 +642,10 @@ function ProjectDetail() {
   }
   const handleDeleteMilestone = async () => { if (deleteMilestone) { await supabase.from('milestones').delete().eq('id', deleteMilestone.id); setDeleteMilestone(null); fetchAll() } }
   const handleDeleteRisk = async () => { if (deleteRisk) { await supabase.from('risks').delete().eq('id', deleteRisk.id); setDeleteRisk(null); fetchAll() } }
+  const saveProject = async (data) => {
+    await supabase.from('projects').update(data).eq('id', project.id)
+    setShowEditProject(false); fetchAll()
+  }
 
   if (loading) return <Spinner />
   if (!project) return <EmptyState icon={FolderKanban} title="Project not found" description="This project may have been deleted." action={<Link to="/projects" className="text-brand-600 text-sm font-medium">← Back to tracker</Link>} />
@@ -675,6 +681,12 @@ function ProjectDetail() {
         </div>
         <div className="flex flex-col items-end gap-2 min-w-[220px]">
           <ProgressBar value={project.percent_complete || '0'} className="w-full" height="h-3" />
+          {isAdmin && (
+            <button onClick={() => setShowEditProject(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 text-white rounded-lg text-xs font-medium hover:bg-brand-700 transition-colors mt-1">
+              <Pencil size={12} /> Edit All Details
+            </button>
+          )}
         </div>
       </div>
 
@@ -752,11 +764,14 @@ function ProjectDetail() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
             {/* Dev Status Pie */}
             <div className="bg-white rounded-2xl p-6 border border-surface-200">
-              <h3 className="text-sm font-semibold text-surface-700 mb-4">Development Status</h3>
+              <h3 className="text-sm font-semibold text-surface-700 mb-1">Development Status</h3>
+              <p className="text-xs text-surface-400 mb-3">Click a segment to see milestones</p>
               <ResponsiveContainer width="100%" height={220}>
                 <PieChart>
                   <Pie data={devStatusData} cx="50%" cy="50%" innerRadius={45} outerRadius={75} paddingAngle={3} dataKey="value"
-                    label={({ name, value }) => `${name} (${value})`} labelLine={false}>
+                    label={({ name, value }) => `${name} (${value})`} labelLine={false}
+                    onClick={(d) => { const filtered = milestones.filter(m => m.development_status === d.name); setDashDrill({ title: `Dev: ${d.name} (${filtered.length})`, items: filtered, type: 'milestones' }) }}
+                    cursor="pointer">
                     {devStatusData.map((d, i) => <Cell key={i} fill={DEV_STATUS_COLORS[d.name]?.hex || '#94a3b8'} />)}
                   </Pie>
                   <RTooltip />
@@ -766,11 +781,14 @@ function ProjectDetail() {
 
             {/* UAT Status Pie */}
             <div className="bg-white rounded-2xl p-6 border border-surface-200">
-              <h3 className="text-sm font-semibold text-surface-700 mb-4">UAT Status</h3>
+              <h3 className="text-sm font-semibold text-surface-700 mb-1">UAT Status</h3>
+              <p className="text-xs text-surface-400 mb-3">Click a segment to see milestones</p>
               <ResponsiveContainer width="100%" height={220}>
                 <PieChart>
                   <Pie data={uatStatusData} cx="50%" cy="50%" innerRadius={45} outerRadius={75} paddingAngle={3} dataKey="value"
-                    label={({ name, value }) => `${name} (${value})`} labelLine={false}>
+                    label={({ name, value }) => `${name} (${value})`} labelLine={false}
+                    onClick={(d) => { const filtered = milestones.filter(m => m.uat_status === d.name); setDashDrill({ title: `UAT: ${d.name} (${filtered.length})`, items: filtered, type: 'milestones' }) }}
+                    cursor="pointer">
                     {uatStatusData.map((d, i) => <Cell key={i} fill={UAT_STATUS_COLORS[d.name]?.hex || '#94a3b8'} />)}
                   </Pie>
                   <RTooltip />
@@ -791,24 +809,30 @@ function ProjectDetail() {
         {risks.length > 0 && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="bg-white rounded-2xl p-6 border border-surface-200">
-              <h3 className="text-sm font-semibold text-surface-700 mb-4">Risks by Impact</h3>
+              <h3 className="text-sm font-semibold text-surface-700 mb-1">Risks by Impact</h3>
+              <p className="text-xs text-surface-400 mb-3">Click a bar to see risks</p>
               <ResponsiveContainer width="100%" height={180}>
                 <BarChart data={riskByImpact}>
                   <XAxis dataKey="name" tick={{ fontSize: 11 }} />
                   <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
                   <RTooltip />
-                  <Bar dataKey="value" fill="#ef4444" radius={[6, 6, 0, 0]} barSize={32} />
+                  <Bar dataKey="value" fill="#ef4444" radius={[6, 6, 0, 0]} barSize={32}
+                    onClick={(d) => { const filtered = risks.filter(r => r.impact === d.name); setDashDrill({ title: `${d.name} Impact Risks (${filtered.length})`, items: filtered, type: 'risks' }) }}
+                    cursor="pointer" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
             <div className="bg-white rounded-2xl p-6 border border-surface-200">
-              <h3 className="text-sm font-semibold text-surface-700 mb-4">Risks by Likelihood</h3>
+              <h3 className="text-sm font-semibold text-surface-700 mb-1">Risks by Likelihood</h3>
+              <p className="text-xs text-surface-400 mb-3">Click a bar to see risks</p>
               <ResponsiveContainer width="100%" height={180}>
                 <BarChart data={riskByLikelihood}>
                   <XAxis dataKey="name" tick={{ fontSize: 11 }} />
                   <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
                   <RTooltip />
-                  <Bar dataKey="value" fill="#f59e0b" radius={[6, 6, 0, 0]} barSize={32} />
+                  <Bar dataKey="value" fill="#f59e0b" radius={[6, 6, 0, 0]} barSize={32}
+                    onClick={(d) => { const filtered = risks.filter(r => r.likelihood === d.name); setDashDrill({ title: `${d.name} Likelihood Risks (${filtered.length})`, items: filtered, type: 'risks' }) }}
+                    cursor="pointer" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -937,10 +961,55 @@ function ProjectDetail() {
     )}
 
     {/* Modals */}
+    <ProjectFormModal open={showEditProject} project={project} onClose={() => setShowEditProject(false)} onSave={saveProject} />
     <MilestoneFormModal open={showMilestoneForm} milestone={editMilestone} onClose={() => { setShowMilestoneForm(false); setEditMilestone(null) }} onSave={saveMilestone} />
     <RiskFormModal open={showRiskForm} risk={editRisk} onClose={() => { setShowRiskForm(false); setEditRisk(null) }} onSave={saveRisk} />
     <ConfirmDialog open={!!deleteMilestone} onClose={() => setDeleteMilestone(null)} onConfirm={handleDeleteMilestone} title="Delete Milestone" message={`Delete "${deleteMilestone?.deliverable}"?`} />
     <ConfirmDialog open={!!deleteRisk} onClose={() => setDeleteRisk(null)} onConfirm={handleDeleteRisk} title="Delete Risk" message="Delete this risk/issue entry?" />
+
+    {/* Project Dashboard Drill-Down Modal */}
+    <Modal open={!!dashDrill} onClose={() => setDashDrill(null)} title={dashDrill?.title || ''} wide>
+      {dashDrill?.type === 'milestones' && (
+        <div className="space-y-2">
+          {(dashDrill?.items || []).map(m => (
+            <div key={m.id} className="flex items-center justify-between p-4 rounded-xl border border-surface-100 bg-surface-50">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs font-mono text-surface-400">#{m.milestone_number}</span>
+                  <p className="text-sm font-semibold text-surface-800">{m.deliverable}</p>
+                </div>
+                <div className="flex items-center gap-3 mt-1">
+                  {m.owner && <span className="text-xs text-surface-500">Owner: {m.owner}</span>}
+                  {m.target_date && <span className="text-xs text-surface-500">Target: {m.target_date}</span>}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 ml-4">
+                <DevStatusBadge status={m.development_status} />
+                <UatStatusBadge status={m.uat_status} />
+              </div>
+            </div>
+          ))}
+          {(dashDrill?.items || []).length === 0 && <p className="text-sm text-surface-400 text-center py-6">No milestones match this filter</p>}
+        </div>
+      )}
+      {dashDrill?.type === 'risks' && (
+        <div className="space-y-2">
+          {(dashDrill?.items || []).map(r => (
+            <div key={r.id} className="p-4 rounded-xl border border-surface-100 bg-surface-50">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs font-mono text-surface-400">#{r.risk_number}</span>
+                {r.impact && <Badge colors={PRIORITY_COLORS[r.impact] || PRIORITY_COLORS['Medium']}>Impact: {r.impact}</Badge>}
+                {r.likelihood && <Badge colors={PRIORITY_COLORS[r.likelihood] || PRIORITY_COLORS['Medium']}>Likelihood: {r.likelihood}</Badge>}
+              </div>
+              <p className="text-sm text-surface-800 mb-1">{r.description}</p>
+              {r.mitigation_action && <p className="text-xs text-surface-500">Mitigation: {r.mitigation_action}</p>}
+              {r.owner && <p className="text-xs text-surface-400 mt-1">Owner: {r.owner}</p>}
+            </div>
+          ))}
+          {(dashDrill?.items || []).length === 0 && <p className="text-sm text-surface-400 text-center py-6">No risks match this filter</p>}
+        </div>
+      )}
+    </Modal>
   </div>
 }
 
@@ -1083,9 +1152,13 @@ function GanttChartPage() {
             <div className="flex-1 relative">
               {months.map((_, i) => (<div key={i} className="absolute top-0 bottom-0 border-r border-surface-50" style={{ left: `${(i / months.length) * 100}%` }} />))}
               {todayPos !== null && <div className="absolute top-0 bottom-0 w-px bg-red-400 z-10" style={{ left: `${todayPos}%` }} />}
-              <div className="absolute top-1/2 -translate-y-1/2 gantt-bar rounded-md overflow-hidden" style={{ left: `${left}%`, width: `${width}%`, height: 16 }}>
+              <div className="absolute top-1/2 -translate-y-1/2 gantt-bar rounded-md overflow-hidden" style={{ left: `${left}%`, width: `${width}%`, height: 20 }}>
                 <div className="absolute inset-0 rounded-md opacity-25" style={{ backgroundColor: color }} />
                 <div className="absolute inset-y-0 left-0 rounded-md opacity-80" style={{ backgroundColor: color, width: `${pct}%` }} />
+                <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold z-10"
+                  style={{ color: pct > 40 ? '#fff' : '#1a202c', textShadow: pct > 40 ? '0 0 3px rgba(0,0,0,0.4)' : 'none' }}>
+                  {p.percent_complete === 'Ongoing' ? '∞' : `${pct}%`}
+                </span>
               </div>
             </div>
           </div>
