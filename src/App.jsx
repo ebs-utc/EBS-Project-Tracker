@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react'
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Routes, Route, Link, useNavigate, useParams, useLocation } from 'react-router-dom'
 import { supabase } from './supabaseClient'
 import {
@@ -10,8 +10,11 @@ import {
   Users, Plus, Pencil, Trash2, X, ChevronRight, AlertTriangle,
   CheckCircle2, Clock, Pause, Target, Shield, Eye, ArrowLeft, Save,
   RefreshCw, Search, Menu, AlertCircle, ExternalLink, BarChart3,
-  ListChecks, FileWarning, Info, ChevronDown, ChevronUp
+  ListChecks, FileWarning, Info, ChevronDown, ChevronUp,
+  Upload, Download, FileSpreadsheet, Presentation
 } from 'lucide-react'
+import PptxGenJS from 'pptxgenjs'
+import * as XLSX from 'xlsx'
 
 // ─── Auth Context ───────────────────────────────────────────
 const AuthCtx = createContext(null)
@@ -149,6 +152,184 @@ function EmptyState({ icon: Icon, title, description, action }) {
 
 function Spinner() { return <div className="flex items-center justify-center py-20"><RefreshCw className="animate-spin text-brand-500" size={28} /></div> }
 
+// ─── Bulk Upload Template Download ──────────────────────────
+function downloadTemplate() {
+  const headers = ['Project Name','Objective/Goal','Dept / Module','Business Owner','Priority','Status','Phase','Est Start (YYYY-MM)','Start Date (YYYY-MM)','End Date (YYYY-MM)','% Complete','Total Cost (KWD)','Business Impact','Cost Remarks','Dependencies','Key Risks','Mitigation','Notes / Updates','Actions Needed']
+  const sample = ['Sample Project','Objective here','EBS/IT','John Doe','High','On Track','Execution','2026-01','2026-01','2026-06','50','1000','High','Budget approved','None','Scope creep','Weekly reviews','On schedule','Complete phase 1']
+  const ws = XLSX.utils.aoa_to_sheet([headers, sample])
+  ws['!cols'] = headers.map(() => ({ wch: 22 }))
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Projects')
+  // Add dropdowns reference sheet
+  const refData = [['Priority','Status','Phase','Business Impact'],['Critical','On Track','Initiation','High'],['High','At Risk','Planning','Medium'],['Medium','Delayed','Execution','Low'],['Low','Completed','UAT',''],['','On Hold','Go-Live',''],['','','Closed','']]
+  const ws2 = XLSX.utils.aoa_to_sheet(refData)
+  XLSX.utils.book_append_sheet(wb, ws2, 'Dropdowns Reference')
+  XLSX.writeFile(wb, 'EBS_Project_Upload_Template.xlsx')
+}
+
+async function parseBulkUpload(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: 'array' })
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        const rows = XLSX.utils.sheet_to_json(ws, { defval: '' })
+        const fieldMap = {
+          'Project Name': 'project_name', 'Objective/Goal': 'objective', 'Dept / Module': 'dept_module',
+          'Business Owner': 'business_owner', 'Priority': 'priority', 'Status': 'status', 'Phase': 'phase',
+          'Est Start (YYYY-MM)': 'est_start', 'Start Date (YYYY-MM)': 'start_date', 'End Date (YYYY-MM)': 'end_date',
+          '% Complete': 'percent_complete', 'Total Cost (KWD)': 'total_cost_kwd', 'Business Impact': 'business_impact',
+          'Cost Remarks': 'cost_remarks', 'Dependencies': 'dependencies', 'Key Risks': 'key_risks',
+          'Mitigation': 'mitigation', 'Notes / Updates': 'notes_updates', 'Actions Needed': 'actions_needed'
+        }
+        const projects = rows.map(row => {
+          const p = {}
+          Object.entries(fieldMap).forEach(([excel, db]) => {
+            const val = row[excel]
+            if (val !== undefined && val !== '') {
+              p[db] = db === 'total_cost_kwd' ? parseFloat(val) || 0 : String(val)
+            }
+          })
+          return p
+        }).filter(p => p.project_name)
+        resolve(projects)
+      } catch (err) { reject(err) }
+    }
+    reader.onerror = reject
+    reader.readAsArrayBuffer(file)
+  })
+}
+
+// ─── PPTX Report Generation ────────────────────────────────
+async function generateReport(projects) {
+  const pptx = new PptxGenJS()
+  pptx.defineLayout({ name: 'CUSTOM', width: 13.33, height: 7.5 })
+  pptx.layout = 'CUSTOM'
+
+  const BG_DARK = '0F1320'
+  const BG_LIGHT = 'F8F9FC'
+  const BRAND = '4263EB'
+  const WHITE = 'FFFFFF'
+  const GRAY = '6B7A99'
+  const GREEN = '10B981'
+  const RED = 'EF4444'
+  const AMBER = 'F59E0B'
+  const BLUE = '3B82F6'
+  const SLATE = '94A3B8'
+
+  const now = new Date()
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December']
+  const currentMonth = monthNames[now.getMonth()]
+  const currentYear = now.getFullYear()
+  const quarter = Math.ceil((now.getMonth() + 1) / 3)
+  const fy = now.getMonth() >= 3 ? currentYear : currentYear - 1
+
+  // ─── Slide 1: Title ───
+  const s1 = pptx.addSlide()
+  s1.background = { color: BG_DARK }
+  s1.addShape(pptx.shapes.ROUNDED_RECTANGLE, { x: 0.6, y: 1.8, w: 6.5, h: 3.5, rectRadius: 0.3, fill: { color: '1A202C' } })
+  s1.addText(`Q${quarter} FY${String(fy).slice(2)}`, { x: 1.0, y: 2.2, w: 5.5, h: 0.6, fontSize: 18, color: GRAY, fontFace: 'Calibri' })
+  s1.addText('Monthly Business Performance Review', { x: 1.0, y: 2.8, w: 5.5, h: 1.0, fontSize: 28, color: WHITE, bold: true, fontFace: 'Calibri' })
+  s1.addText(`${currentMonth} ${currentYear}`, { x: 1.0, y: 4.4, w: 5.5, h: 0.5, fontSize: 14, color: GRAY, fontFace: 'Calibri' })
+
+  // ─── Slide 2: Section ───
+  const s2 = pptx.addSlide()
+  s2.background = { color: WHITE }
+  s2.addText('EBS Updates', { x: 2, y: 2.8, w: 9, h: 1.2, fontSize: 40, bold: true, color: '1A202C', fontFace: 'Calibri', align: 'center' })
+  s2.addText(String(projects.length), { x: 12.0, y: 6.5, w: 1, h: 0.6, fontSize: 14, color: GRAY, fontFace: 'Calibri', align: 'right' })
+
+  // ─── Slide 3: Data Slide ───
+  const s3 = pptx.addSlide()
+  s3.background = { color: BG_LIGHT }
+
+  // Header
+  s3.addText('EBS Updates', { x: 0.4, y: 0.2, w: 4, h: 0.5, fontSize: 20, bold: true, color: '1A202C', fontFace: 'Calibri' })
+  s3.addText(`EBS Project Portfolio  |  ${currentMonth} ${currentYear}  |  Monthly Business Review`, { x: 0.4, y: 0.65, w: 8, h: 0.35, fontSize: 9, color: GRAY, fontFace: 'Calibri' })
+
+  // Stats
+  const onTrack = projects.filter(p => p.status === 'On Track').length
+  const delayed = projects.filter(p => p.status === 'Delayed').length
+  const onHold = projects.filter(p => p.status === 'On Hold').length
+  const completed = projects.filter(p => p.status === 'Completed').length
+  const total = projects.length
+
+  // Portfolio Status box
+  s3.addText('Portfolio Status', { x: 0.4, y: 1.15, w: 2.8, h: 0.35, fontSize: 11, bold: true, color: '1A202C', fontFace: 'Calibri' })
+
+  const statItems = [
+    { label: 'On Track', value: onTrack, color: GREEN },
+    { label: 'Delayed', value: delayed, color: RED },
+    { label: 'On Hold', value: onHold, color: SLATE },
+    { label: 'Completed', value: completed, color: BLUE },
+  ]
+  statItems.forEach((item, i) => {
+    const y = 1.6 + i * 0.42
+    s3.addShape(pptx.shapes.ROUNDED_RECTANGLE, { x: 0.5, y: y, w: 0.2, h: 0.25, rectRadius: 0.04, fill: { color: item.color } })
+    s3.addText(item.label, { x: 0.85, y: y, w: 1.5, h: 0.25, fontSize: 10, color: '1A202C', fontFace: 'Calibri' })
+    s3.addText(String(item.value), { x: 2.5, y: y, w: 0.6, h: 0.25, fontSize: 12, bold: true, color: '1A202C', fontFace: 'Calibri', align: 'right' })
+  })
+
+  // Total circle
+  s3.addShape(pptx.shapes.OVAL, { x: 0.7, y: 3.5, w: 1.8, h: 1.4, fill: { color: BRAND } })
+  s3.addText(`${total} Projects`, { x: 0.7, y: 3.7, w: 1.8, h: 0.7, fontSize: 18, bold: true, color: WHITE, fontFace: 'Calibri', align: 'center' })
+  s3.addText(`Total Active Portfolio  |  ${currentMonth.slice(0,3)} ${currentYear}`, { x: 0.3, y: 4.35, w: 2.6, h: 0.4, fontSize: 7, color: GRAY, fontFace: 'Calibri', align: 'center' })
+
+  // ─── Content columns ───
+  const colX = [0.4, 3.6, 6.8, 10.0]
+  const colW = [3.0, 3.0, 3.0, 3.0]
+  const secY = 5.2
+
+  // New this month (projects started in current month)
+  const newThisMonth = projects.filter(p => {
+    if (!p.start_date) return false
+    const sd = p.start_date
+    const m = now.getMonth() + 1
+    const y = now.getFullYear()
+    return sd === `${y}-${String(m).padStart(2, '0')}`
+  })
+  s3.addShape(pptx.shapes.ROUNDED_RECTANGLE, { x: colX[0], y: secY, w: colW[0], h: 2.0, rectRadius: 0.15, fill: { color: WHITE }, shadow: { type: 'outer', blur: 4, opacity: 0.1, offset: 2 } })
+  s3.addText('New This Month', { x: colX[0] + 0.15, y: secY + 0.1, w: colW[0] - 0.3, h: 0.35, fontSize: 10, bold: true, color: '1A202C', fontFace: 'Calibri' })
+  const newText = newThisMonth.length > 0 ? newThisMonth.map(p => `• ${p.project_name}`).join('\n') : '• No new projects this month'
+  s3.addText(newText, { x: colX[0] + 0.15, y: secY + 0.45, w: colW[0] - 0.3, h: 1.4, fontSize: 7.5, color: GRAY, fontFace: 'Calibri', valign: 'top', lineSpacingMultiple: 1.3 })
+
+  // Highlights (completed + high progress)
+  const highlights = projects.filter(p => p.status === 'Completed' || (parseInt(p.percent_complete) >= 80 && p.status !== 'On Hold'))
+  s3.addShape(pptx.shapes.ROUNDED_RECTANGLE, { x: colX[1], y: 1.15, w: colW[1], h: 3.85, rectRadius: 0.15, fill: { color: WHITE }, shadow: { type: 'outer', blur: 4, opacity: 0.1, offset: 2 } })
+  s3.addText(`${currentMonth} Highlights`, { x: colX[1] + 0.15, y: 1.25, w: colW[1] - 0.3, h: 0.35, fontSize: 10, bold: true, color: '1A202C', fontFace: 'Calibri' })
+  const hlText = highlights.slice(0, 8).map(p => `• ${p.project_name} — ${p.percent_complete === '100' ? 'Completed' : p.percent_complete + '% complete'}`).join('\n')
+  s3.addText(hlText || '• No highlights', { x: colX[1] + 0.15, y: 1.65, w: colW[1] - 0.3, h: 3.2, fontSize: 7.5, color: GRAY, fontFace: 'Calibri', valign: 'top', lineSpacingMultiple: 1.3 })
+
+  // Risks & Issues
+  const riskyProjects = projects.filter(p => p.status === 'Delayed' || p.status === 'At Risk' || p.status === 'On Hold')
+  s3.addShape(pptx.shapes.ROUNDED_RECTANGLE, { x: colX[2], y: 1.15, w: colW[2], h: 3.85, rectRadius: 0.15, fill: { color: WHITE }, shadow: { type: 'outer', blur: 4, opacity: 0.1, offset: 2 } })
+  s3.addText('Risks & Issues', { x: colX[2] + 0.15, y: 1.25, w: colW[2] - 0.3, h: 0.35, fontSize: 10, bold: true, color: '1A202C', fontFace: 'Calibri' })
+  const riskText = riskyProjects.slice(0, 6).map(p => {
+    const reason = p.key_risks ? ` — ${p.key_risks.substring(0, 80)}` : ''
+    return `• ${p.project_name}${reason}`
+  }).join('\n')
+  s3.addText(riskText || '• No active risks', { x: colX[2] + 0.15, y: 1.65, w: colW[2] - 0.3, h: 3.2, fontSize: 7.5, color: GRAY, fontFace: 'Calibri', valign: 'top', lineSpacingMultiple: 1.3 })
+
+  // Focus this month (active execution/UAT projects)
+  const focusProjects = projects.filter(p => (p.phase === 'Execution' || p.phase === 'UAT') && p.status === 'On Track')
+  s3.addShape(pptx.shapes.ROUNDED_RECTANGLE, { x: colX[1], y: secY, w: colW[1], h: 2.0, rectRadius: 0.15, fill: { color: WHITE }, shadow: { type: 'outer', blur: 4, opacity: 0.1, offset: 2 } })
+  s3.addText(`${currentMonth} ${currentYear} Focus`, { x: colX[1] + 0.15, y: secY + 0.1, w: colW[1] - 0.3, h: 0.35, fontSize: 10, bold: true, color: '1A202C', fontFace: 'Calibri' })
+  const focusText = focusProjects.slice(0, 6).map(p => `• ${p.project_name} — ${p.percent_complete || '0'}%`).join('\n')
+  s3.addText(focusText || '• No items in focus', { x: colX[1] + 0.15, y: secY + 0.45, w: colW[1] - 0.3, h: 1.4, fontSize: 7.5, color: GRAY, fontFace: 'Calibri', valign: 'top', lineSpacingMultiple: 1.3 })
+
+  // Decisions Required
+  const decisionsNeeded = projects.filter(p => p.actions_needed && p.actions_needed.length > 10)
+  s3.addShape(pptx.shapes.ROUNDED_RECTANGLE, { x: colX[2], y: secY, w: colW[2] + 0.3, h: 2.0, rectRadius: 0.15, fill: { color: WHITE }, shadow: { type: 'outer', blur: 4, opacity: 0.1, offset: 2 } })
+  s3.addText('Decisions Required', { x: colX[2] + 0.15, y: secY + 0.1, w: colW[2], h: 0.35, fontSize: 10, bold: true, color: '1A202C', fontFace: 'Calibri' })
+  const decText = decisionsNeeded.slice(0, 5).map(p => `• ${p.project_name} — ${p.actions_needed.substring(0, 80)}`).join('\n')
+  s3.addText(decText || '• No pending decisions', { x: colX[2] + 0.15, y: secY + 0.45, w: colW[2], h: 1.4, fontSize: 7.5, color: GRAY, fontFace: 'Calibri', valign: 'top', lineSpacingMultiple: 1.3 })
+
+  // Slide number
+  s3.addText('3', { x: 12.5, y: 6.9, w: 0.5, h: 0.4, fontSize: 10, color: GRAY, fontFace: 'Calibri', align: 'right' })
+
+  pptx.writeFile({ fileName: `EBS_MBR_${currentMonth}_${currentYear}.pptx` })
+}
+
 // ─── Drill-Down List Modal ──────────────────────────────────
 function DrillDownModal({ open, onClose, title, projects, onProjectClick }) {
   if (!open) return null
@@ -197,7 +378,7 @@ function Layout() {
     <aside className={`fixed lg:static z-40 h-full w-64 bg-surface-900 flex flex-col transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
       <div className="px-5 py-5 border-b border-surface-700/50">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-brand-600 flex items-center justify-center"><Target className="text-white" size={18} /></div>
+          <div className="w-9 h-9 rounded-xl overflow-hidden bg-white flex items-center justify-center"><img src="./ebs-logo.png" alt="EBS" className="w-full h-full object-contain" /></div>
           <div><h1 className="text-sm font-bold text-white font-display tracking-tight">EBS Projects</h1><p className="text-[11px] text-surface-400">Tracker & Roadmap</p></div>
         </div>
       </div>
@@ -245,7 +426,7 @@ function Layout() {
       {/* Mobile top bar */}
       <div className="lg:hidden sticky top-0 z-20 bg-surface-900 px-4 py-3 flex items-center justify-between" style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}>
         <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-lg bg-brand-600 flex items-center justify-center"><Target className="text-white" size={14} /></div>
+          <div className="w-7 h-7 rounded-lg overflow-hidden bg-white flex items-center justify-center"><img src="./ebs-logo.png" alt="EBS" className="w-full h-full object-contain" /></div>
           <h1 className="text-sm font-bold text-white font-display">EBS Projects</h1>
         </div>
         <div className="flex items-center gap-2">
@@ -363,9 +544,13 @@ function Dashboard() {
       </div>
       {/* Project-level dashboard selector */}
       <div className="flex items-center gap-2">
+        <button onClick={() => generateReport(projects)}
+          className="flex items-center gap-2 px-4 py-2 bg-surface-900 text-white rounded-xl text-sm font-medium hover:bg-surface-800 transition-colors shadow-sm whitespace-nowrap">
+          <Presentation size={16} /> Generate MBR
+        </button>
         <select value={selectedProjectId} onChange={e => { if (e.target.value) navigate(`/projects/${e.target.value}`) }}
-          className={`${selectCls} w-auto min-w-[240px] text-sm`}>
-          <option value="">Jump to project dashboard...</option>
+          className={`${selectCls} w-auto min-w-[200px] sm:min-w-[240px] text-sm`}>
+          <option value="">Jump to project...</option>
           {projects.map(p => <option key={p.id} value={p.id}>#{p.project_number} — {p.project_name}</option>)}
         </select>
       </div>
@@ -498,6 +683,9 @@ function ProjectTracker() {
   const [searchTerm, setSearchTerm] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
   const [filterPriority, setFilterPriority] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [uploadMsg, setUploadMsg] = useState('')
+  const fileInputRef = useRef(null)
 
   const fetchProjects = useCallback(async () => {
     const { data } = await supabase.from('projects').select('*').order('project_number')
@@ -520,6 +708,25 @@ function ProjectTracker() {
   const handleDelete = async () => {
     if (deleteTarget) { await supabase.from('projects').delete().eq('id', deleteTarget.id); setDeleteTarget(null); fetchProjects() }
   }
+  const handleBulkUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploading(true); setUploadMsg('')
+    try {
+      const parsed = await parseBulkUpload(file)
+      if (parsed.length === 0) { setUploadMsg('No valid projects found in the file.'); setUploading(false); return }
+      const maxNum = projects.reduce((m, p) => Math.max(m, p.project_number || 0), 0)
+      const toInsert = parsed.map((p, i) => ({ ...p, project_number: maxNum + 1 + i }))
+      const { error } = await supabase.from('projects').insert(toInsert)
+      if (error) throw error
+      setUploadMsg(`Successfully imported ${toInsert.length} projects!`)
+      fetchProjects()
+    } catch (err) {
+      setUploadMsg(`Error: ${err.message}`)
+    }
+    setUploading(false)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
 
   if (loading) return <Spinner />
 
@@ -530,12 +737,30 @@ function ProjectTracker() {
         <p className="text-sm text-surface-500 mt-1">{projects.length} projects · {filtered.length} shown · Click any row to view details</p>
       </div>
       {isAdmin && (
-        <button onClick={() => { setEditProject(null); setShowForm(true) }}
-          className="flex items-center gap-2 px-4 py-2.5 bg-brand-600 text-white rounded-xl text-sm font-medium hover:bg-brand-700 transition-colors shadow-sm">
-          <Plus size={16} /> New Project
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={downloadTemplate}
+            className="flex items-center gap-1.5 px-3 py-2 border border-surface-200 text-surface-600 rounded-xl text-xs font-medium hover:bg-surface-50 transition-colors">
+            <Download size={14} /> Template
+          </button>
+          <input type="file" ref={fileInputRef} accept=".xlsx,.xls,.csv" onChange={handleBulkUpload} className="hidden" />
+          <button onClick={() => fileInputRef.current?.click()} disabled={uploading}
+            className="flex items-center gap-1.5 px-3 py-2 border border-surface-200 text-surface-600 rounded-xl text-xs font-medium hover:bg-surface-50 transition-colors disabled:opacity-50">
+            <Upload size={14} /> {uploading ? 'Importing...' : 'Bulk Upload'}
+          </button>
+          <button onClick={() => { setEditProject(null); setShowForm(true) }}
+            className="flex items-center gap-2 px-4 py-2.5 bg-brand-600 text-white rounded-xl text-sm font-medium hover:bg-brand-700 transition-colors shadow-sm">
+            <Plus size={16} /> New Project
+          </button>
+        </div>
       )}
     </div>
+
+    {uploadMsg && (
+      <div className={`mb-4 px-4 py-3 rounded-xl text-sm ${uploadMsg.startsWith('Error') ? 'bg-red-50 border border-red-200 text-red-700' : 'bg-emerald-50 border border-emerald-200 text-emerald-700'}`}>
+        {uploadMsg}
+        <button onClick={() => setUploadMsg('')} className="ml-2 font-medium underline">dismiss</button>
+      </div>
+    )}
 
     <div className="flex flex-col sm:flex-row gap-3 mb-6">
       <div className="relative flex-1">
