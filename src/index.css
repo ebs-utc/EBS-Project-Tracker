@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'DM Sans', system-ui, sans-serif;
+  background: #f8f9fc;
+  color: #1a202c;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d1d7e5; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #9aa5bd; }
+
+/* Gantt */
+.gantt-bar { transition: all 0.3s ease; }
+.gantt-bar:hover { filter: brightness(1.1); transform: scaleY(1.15); }
+
+/* Animations */
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes slideIn { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes pulse-ring { 0% { transform: scale(0.8); opacity: 1; } 100% { transform: scale(1.4); opacity: 0; } }
+
+.animate-fade-in { animation: fadeIn 0.35s ease-out both; }
+.animate-slide-in { animation: slideIn 0.3s ease-out both; }
+
+/* Stagger children */
+.stagger > *:nth-child(1) { animation-delay: 0ms; }
+.stagger > *:nth-child(2) { animation-delay: 50ms; }
+.stagger > *:nth-child(3) { animation-delay: 100ms; }
+.stagger > *:nth-child(4) { animation-delay: 150ms; }
+.stagger > *:nth-child(5) { animation-delay: 200ms; }
+.stagger > *:nth-child(6) { animation-delay: 250ms; }
+
+/* Modal backdrop */
+.modal-backdrop {
+  background: rgba(15, 19, 32, 0.6);
+  backdrop-filter: blur(4px);
+}
+
+/* Table row hover */
+tr.project-row { transition: background 0.15s; }
+tr.project-row:hover { background: #f0f4ff !important; }
+tr.project-row { cursor: pointer; }
+
+/* Tooltip */
+.tooltip-trigger:hover .tooltip-content { opacity: 1; pointer-events: auto; transform: translateY(0); }
+.tooltip-content { opacity: 0; pointer-events: none; transform: translateY(4px); transition: all 0.2s; }
+
+/* Custom select */
+select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7a99' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 0.5rem center; padding-right: 1.5rem; }

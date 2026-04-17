@@ -1,0 +1,1465 @@
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react'
+import { Routes, Route, Link, useNavigate, useParams, useLocation } from 'react-router-dom'
+import { supabase } from './supabaseClient'
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer,
+  PieChart, Pie, Cell, Legend
+} from 'recharts'
+import {
+  LayoutDashboard, FolderKanban, GanttChart as GanttIcon, LogIn, LogOut,
+  Users, Plus, Pencil, Trash2, X, ChevronRight, ChevronDown, AlertTriangle,
+  CheckCircle2, Clock, Pause, Target, Shield, Eye, ArrowLeft, Save,
+  RefreshCw, Search, Filter, MoreVertical, Milestone as MilestoneIcon,
+  AlertCircle, Menu, ChevronLeft
+} from 'lucide-react'
+
+// ─── Auth Context ───────────────────────────────────────────
+const AuthCtx = createContext(null)
+const useAuth = () => useContext(AuthCtx)
+
+function AuthProvider({ children }) {
+  const [user, setUser] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null)
+      setLoading(false)
+    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
+      setUser(session?.user ?? null)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
+  const signIn = async (email, password) => {
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) throw error
+    return data
+  }
+
+  const signOut = async () => {
+    await supabase.auth.signOut()
+    setUser(null)
+  }
+
+  return (
+    <AuthCtx.Provider value={{ user, loading, signIn, signOut, isAdmin: !!user }}>
+      {children}
+    </AuthCtx.Provider>
+  )
+}
+
+// ─── Constants ──────────────────────────────────────────────
+const PRIORITIES = ['Critical', 'High', 'Medium', 'Low']
+const STATUSES = ['On Track', 'At Risk', 'Delayed', 'Completed', 'On Hold']
+const PHASES = ['Initiation', 'Planning', 'Execution', 'UAT', 'Go-Live', 'Closed']
+const IMPACTS = ['High', 'Medium', 'Low']
+const DEV_STATUSES = ['Not Started', 'In Progress', 'Completed', 'Blocked']
+const UAT_STATUSES = ['Not Started', 'Pending', 'In Progress', 'Passed', 'Failed']
+
+const STATUS_COLORS = {
+  'On Track': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200', dot: 'bg-emerald-500', hex: '#10b981' },
+  'At Risk': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200', dot: 'bg-amber-500', hex: '#f59e0b' },
+  'Delayed': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200', dot: 'bg-red-500', hex: '#ef4444' },
+  'Completed': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200', dot: 'bg-blue-500', hex: '#3b82f6' },
+  'On Hold': { bg: 'bg-slate-50', text: 'text-slate-600', border: 'border-slate-200', dot: 'bg-slate-400', hex: '#94a3b8' },
+}
+
+const PRIORITY_COLORS = {
+  Critical: { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
+  High: { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+  Medium: { bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200' },
+  Low: { bg: 'bg-slate-50', text: 'text-slate-600', border: 'border-slate-200' },
+}
+
+// ─── Utility Components ─────────────────────────────────────
+function Badge({ children, colors }) {
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${colors.bg} ${colors.text} ${colors.border}`}>
+      {colors.dot && <span className={`w-1.5 h-1.5 rounded-full ${colors.dot}`} />}
+      {children}
+    </span>
+  )
+}
+
+function StatusBadge({ status }) {
+  return <Badge colors={STATUS_COLORS[status] || STATUS_COLORS['On Track']}>{status}</Badge>
+}
+
+function PriorityBadge({ priority }) {
+  return <Badge colors={PRIORITY_COLORS[priority] || PRIORITY_COLORS['Medium']}>{priority}</Badge>
+}
+
+function ProgressBar({ value, className = '' }) {
+  const num = value === 'Ongoing' ? 50 : parseInt(value) || 0
+  const color = num >= 100 ? 'bg-blue-500' : num >= 75 ? 'bg-emerald-500' : num >= 40 ? 'bg-amber-500' : 'bg-brand-500'
+  return (
+    <div className={`flex items-center gap-2 ${className}`}>
+      <div className="flex-1 h-2 bg-surface-200 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full transition-all duration-500 ${color}`} style={{ width: `${Math.min(num, 100)}%` }} />
+      </div>
+      <span className="text-xs font-medium text-surface-500 w-12 text-right">{value === 'Ongoing' ? 'Ongoing' : `${num}%`}</span>
+    </div>
+  )
+}
+
+function Modal({ open, onClose, title, children, wide }) {
+  if (!open) return null
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[5vh] modal-backdrop" onClick={onClose}>
+      <div className={`bg-white rounded-2xl shadow-2xl ${wide ? 'max-w-4xl' : 'max-w-2xl'} w-full mx-4 max-h-[85vh] flex flex-col animate-fade-in`} onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-surface-200">
+          <h2 className="text-lg font-semibold font-display text-surface-800">{title}</h2>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-100 text-surface-400 hover:text-surface-600 transition-colors"><X size={18} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-6 py-5">{children}</div>
+      </div>
+    </div>
+  )
+}
+
+function ConfirmDialog({ open, onClose, onConfirm, title, message }) {
+  if (!open) return null
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center modal-backdrop" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6 animate-fade-in" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="p-2 bg-red-50 rounded-xl"><AlertTriangle className="text-red-500" size={20} /></div>
+          <h3 className="text-lg font-semibold text-surface-800">{title}</h3>
+        </div>
+        <p className="text-surface-600 mb-6">{message}</p>
+        <div className="flex gap-3 justify-end">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-surface-200 text-surface-600 hover:bg-surface-50 font-medium text-sm">Cancel</button>
+          <button onClick={onConfirm} className="px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-600 font-medium text-sm">Delete</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function FormField({ label, children, className = '' }) {
+  return (
+    <div className={className}>
+      <label className="block text-sm font-medium text-surface-600 mb-1.5">{label}</label>
+      {children}
+    </div>
+  )
+}
+
+const inputCls = 'w-full px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 transition-colors'
+const selectCls = inputCls
+const textareaCls = inputCls + ' resize-none'
+
+function EmptyState({ icon: Icon, title, description, action }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 text-center">
+      <div className="p-4 bg-surface-100 rounded-2xl mb-4"><Icon className="text-surface-400" size={32} /></div>
+      <h3 className="text-lg font-semibold text-surface-700 mb-1">{title}</h3>
+      <p className="text-sm text-surface-500 mb-4 max-w-sm">{description}</p>
+      {action}
+    </div>
+  )
+}
+
+function Spinner() {
+  return <div className="flex items-center justify-center py-20"><RefreshCw className="animate-spin text-brand-500" size={28} /></div>
+}
+
+// ─── Layout ─────────────────────────────────────────────────
+function Layout() {
+  const { user, signOut, isAdmin } = useAuth()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  const nav = [
+    { path: '/', label: 'Dashboard', icon: LayoutDashboard },
+    { path: '/projects', label: 'Project Tracker', icon: FolderKanban },
+    { path: '/gantt', label: 'Gantt Chart', icon: GanttIcon },
+  ]
+
+  const isActive = (path) => location.pathname === path || (path !== '/' && location.pathname.startsWith(path))
+
+  return (
+    <div className="flex h-screen overflow-hidden">
+      {/* Mobile overlay */}
+      {sidebarOpen && <div className="fixed inset-0 bg-black/30 z-30 lg:hidden" onClick={() => setSidebarOpen(false)} />}
+
+      {/* Sidebar */}
+      <aside className={`fixed lg:static z-40 h-full w-64 bg-surface-900 flex flex-col transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
+        <div className="px-5 py-5 border-b border-surface-700/50">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-brand-600 flex items-center justify-center">
+              <Target className="text-white" size={18} />
+            </div>
+            <div>
+              <h1 className="text-sm font-bold text-white font-display tracking-tight">EBS Projects</h1>
+              <p className="text-[11px] text-surface-400">Tracker & Roadmap</p>
+            </div>
+          </div>
+        </div>
+
+        <nav className="flex-1 px-3 py-4 space-y-1">
+          {nav.map(({ path, label, icon: Icon }) => (
+            <Link
+              key={path} to={path}
+              onClick={() => setSidebarOpen(false)}
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                isActive(path)
+                  ? 'bg-brand-600/20 text-brand-300'
+                  : 'text-surface-400 hover:text-white hover:bg-surface-800'
+              }`}
+            >
+              <Icon size={18} />
+              {label}
+            </Link>
+          ))}
+        </nav>
+
+        <div className="px-3 py-4 border-t border-surface-700/50">
+          {isAdmin ? (
+            <div className="space-y-1">
+              <Link to="/admin/users" onClick={() => setSidebarOpen(false)}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                  isActive('/admin') ? 'bg-brand-600/20 text-brand-300' : 'text-surface-400 hover:text-white hover:bg-surface-800'
+                }`}>
+                <Users size={18} /> Manage Users
+              </Link>
+              <button onClick={signOut}
+                className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-surface-400 hover:text-white hover:bg-surface-800 w-full transition-all">
+                <LogOut size={18} /> Sign Out
+              </button>
+              <div className="px-3 py-2 mt-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-full bg-brand-600 flex items-center justify-center">
+                    <Shield className="text-white" size={12} />
+                  </div>
+                  <span className="text-xs text-surface-400 truncate">{user.email}</span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <Link to="/login" onClick={() => setSidebarOpen(false)}
+              className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-surface-400 hover:text-white hover:bg-surface-800 transition-all">
+              <LogIn size={18} /> Admin Login
+            </Link>
+          )}
+          {!isAdmin && (
+            <div className="px-3 py-2 mt-2 flex items-center gap-2">
+              <Eye size={14} className="text-surface-500" />
+              <span className="text-xs text-surface-500">Viewing as Guest (Read-only)</span>
+            </div>
+          )}
+        </div>
+      </aside>
+
+      {/* Main */}
+      <main className="flex-1 overflow-y-auto">
+        <div className="lg:hidden sticky top-0 z-20 bg-white/80 backdrop-blur-md border-b border-surface-200 px-4 py-3 flex items-center gap-3">
+          <button onClick={() => setSidebarOpen(true)} className="p-1.5 rounded-lg hover:bg-surface-100">
+            <Menu size={20} className="text-surface-600" />
+          </button>
+          <h1 className="text-sm font-bold font-display text-surface-800">EBS Projects</h1>
+        </div>
+        <div className="p-4 sm:p-6 lg:p-8">
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/projects" element={<ProjectTracker />} />
+            <Route path="/projects/:id" element={<ProjectDetail />} />
+            <Route path="/gantt" element={<GanttChartPage />} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/admin/users" element={<AdminUsersPage />} />
+          </Routes>
+        </div>
+      </main>
+    </div>
+  )
+}
+
+// ─── Dashboard ──────────────────────────────────────────────
+function Dashboard() {
+  const [projects, setProjects] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    supabase.from('projects').select('*').order('project_number').then(({ data }) => {
+      setProjects(data || [])
+      setLoading(false)
+    })
+  }, [])
+
+  if (loading) return <Spinner />
+
+  const total = projects.length
+  const byStatus = STATUSES.map(s => ({ name: s, value: projects.filter(p => p.status === s).length })).filter(d => d.value > 0)
+  const byPriority = PRIORITIES.map(p => ({ name: p, value: projects.filter(pr => pr.priority === p).length })).filter(d => d.value > 0)
+  const onTrack = projects.filter(p => p.status === 'On Track').length
+  const atRisk = projects.filter(p => p.status === 'At Risk' || p.status === 'Delayed').length
+  const completed = projects.filter(p => p.status === 'Completed').length
+  const onHold = projects.filter(p => p.status === 'On Hold').length
+  const totalCost = projects.reduce((s, p) => s + (parseFloat(p.total_cost_kwd) || 0), 0)
+
+  const byDept = {}
+  projects.forEach(p => {
+    const d = p.dept_module || 'Unassigned'
+    byDept[d] = (byDept[d] || 0) + 1
+  })
+  const deptData = Object.entries(byDept).map(([name, value]) => ({ name: name.length > 25 ? name.substring(0, 25) + '…' : name, value })).sort((a, b) => b.value - a.value).slice(0, 10)
+
+  const byPhase = PHASES.map(ph => ({ name: ph, value: projects.filter(p => p.phase === ph).length })).filter(d => d.value > 0)
+
+  const PIE_COLORS = ['#10b981', '#f59e0b', '#ef4444', '#3b82f6', '#94a3b8']
+  const PRIORITY_PIE_COLORS = ['#ef4444', '#f97316', '#38bdf8', '#94a3b8']
+
+  const summaryCards = [
+    { label: 'Total Projects', value: total, icon: FolderKanban, color: 'bg-brand-600' },
+    { label: 'On Track', value: onTrack, icon: CheckCircle2, color: 'bg-emerald-500' },
+    { label: 'At Risk / Delayed', value: atRisk, icon: AlertTriangle, color: 'bg-red-500' },
+    { label: 'Completed', value: completed, icon: Target, color: 'bg-blue-500' },
+    { label: 'On Hold', value: onHold, icon: Pause, color: 'bg-slate-400' },
+    { label: 'Total Cost (KWD)', value: totalCost.toLocaleString(), icon: BarChart, color: 'bg-violet-500' },
+  ]
+
+  return (
+    <div>
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold font-display text-surface-900">Portfolio Dashboard</h1>
+        <p className="text-sm text-surface-500 mt-1">Auto-generated overview of all EBS projects</p>
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4 mb-8 stagger">
+        {summaryCards.map(({ label, value, icon: Icon, color }) => (
+          <div key={label} className="bg-white rounded-2xl p-4 border border-surface-200 shadow-sm animate-fade-in hover:shadow-md transition-shadow">
+            <div className="flex items-center gap-2 mb-3">
+              <div className={`p-1.5 rounded-lg ${color}`}><Icon size={14} className="text-white" /></div>
+            </div>
+            <p className="text-2xl font-bold font-display text-surface-900">{value}</p>
+            <p className="text-xs text-surface-500 mt-0.5">{label}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Charts */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+        {/* Status Pie */}
+        <div className="bg-white rounded-2xl p-6 border border-surface-200 shadow-sm">
+          <h3 className="text-sm font-semibold text-surface-700 mb-4">Status Breakdown</h3>
+          <ResponsiveContainer width="100%" height={260}>
+            <PieChart>
+              <Pie data={byStatus} cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={3} dataKey="value" label={({ name, value }) => `${name} (${value})`} labelLine={false}>
+                {byStatus.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+              </Pie>
+              <RTooltip />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Priority Pie */}
+        <div className="bg-white rounded-2xl p-6 border border-surface-200 shadow-sm">
+          <h3 className="text-sm font-semibold text-surface-700 mb-4">Priority Breakdown</h3>
+          <ResponsiveContainer width="100%" height={260}>
+            <PieChart>
+              <Pie data={byPriority} cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={3} dataKey="value" label={({ name, value }) => `${name} (${value})`} labelLine={false}>
+                {byPriority.map((_, i) => <Cell key={i} fill={PRIORITY_PIE_COLORS[i % PRIORITY_PIE_COLORS.length]} />)}
+              </Pie>
+              <RTooltip />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Department Bar */}
+        <div className="bg-white rounded-2xl p-6 border border-surface-200 shadow-sm">
+          <h3 className="text-sm font-semibold text-surface-700 mb-4">Projects by Department</h3>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={deptData} layout="vertical" margin={{ left: 10, right: 20 }}>
+              <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+              <YAxis dataKey="name" type="category" width={140} tick={{ fontSize: 10 }} />
+              <RTooltip />
+              <Bar dataKey="value" fill="#4c6ef5" radius={[0, 6, 6, 0]} barSize={18} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Phase Bar */}
+        <div className="bg-white rounded-2xl p-6 border border-surface-200 shadow-sm">
+          <h3 className="text-sm font-semibold text-surface-700 mb-4">Projects by Phase</h3>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={byPhase} margin={{ bottom: 20 }}>
+              <XAxis dataKey="name" tick={{ fontSize: 11, angle: -20, textAnchor: 'end' }} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+              <RTooltip />
+              <Bar dataKey="value" fill="#10b981" radius={[6, 6, 0, 0]} barSize={32} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Recent / At Risk */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white rounded-2xl p-6 border border-surface-200 shadow-sm">
+          <h3 className="text-sm font-semibold text-surface-700 mb-4">At Risk & Delayed Projects</h3>
+          {projects.filter(p => p.status === 'At Risk' || p.status === 'Delayed').length === 0 ? (
+            <p className="text-sm text-surface-400 py-4">No at-risk or delayed projects</p>
+          ) : (
+            <div className="space-y-3">
+              {projects.filter(p => p.status === 'At Risk' || p.status === 'Delayed').map(p => (
+                <Link key={p.id} to={`/projects/${p.id}`} className="flex items-center justify-between p-3 rounded-xl bg-surface-50 hover:bg-red-50/50 transition-colors">
+                  <div>
+                    <p className="text-sm font-medium text-surface-800">{p.project_name}</p>
+                    <p className="text-xs text-surface-500">{p.business_owner}</p>
+                  </div>
+                  <StatusBadge status={p.status} />
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white rounded-2xl p-6 border border-surface-200 shadow-sm">
+          <h3 className="text-sm font-semibold text-surface-700 mb-4">Recently Updated</h3>
+          <div className="space-y-3">
+            {[...projects].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 5).map(p => (
+              <Link key={p.id} to={`/projects/${p.id}`} className="flex items-center justify-between p-3 rounded-xl bg-surface-50 hover:bg-brand-50/50 transition-colors">
+                <div>
+                  <p className="text-sm font-medium text-surface-800">{p.project_name}</p>
+                  <p className="text-xs text-surface-500">{new Date(p.updated_at).toLocaleDateString()}</p>
+                </div>
+                <ProgressBar value={p.percent_complete || '0'} className="w-28" />
+              </Link>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Project Tracker ────────────────────────────────────────
+function ProjectTracker() {
+  const { isAdmin } = useAuth()
+  const navigate = useNavigate()
+  const [projects, setProjects] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [editProject, setEditProject] = useState(null)
+  const [showForm, setShowForm] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const [searchTerm, setSearchTerm] = useState('')
+  const [filterStatus, setFilterStatus] = useState('')
+  const [filterPriority, setFilterPriority] = useState('')
+
+  const fetchProjects = useCallback(async () => {
+    const { data } = await supabase.from('projects').select('*').order('project_number')
+    setProjects(data || [])
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { fetchProjects() }, [fetchProjects])
+
+  const filtered = useMemo(() => {
+    return projects.filter(p => {
+      if (searchTerm && !p.project_name.toLowerCase().includes(searchTerm.toLowerCase()) && !(p.business_owner || '').toLowerCase().includes(searchTerm.toLowerCase())) return false
+      if (filterStatus && p.status !== filterStatus) return false
+      if (filterPriority && p.priority !== filterPriority) return false
+      return true
+    })
+  }, [projects, searchTerm, filterStatus, filterPriority])
+
+  const handleSave = async (data) => {
+    if (editProject) {
+      await supabase.from('projects').update(data).eq('id', editProject.id)
+    } else {
+      const maxNum = projects.reduce((m, p) => Math.max(m, p.project_number || 0), 0)
+      await supabase.from('projects').insert({ ...data, project_number: maxNum + 1 })
+    }
+    setShowForm(false)
+    setEditProject(null)
+    fetchProjects()
+  }
+
+  const handleDelete = async () => {
+    if (deleteTarget) {
+      await supabase.from('projects').delete().eq('id', deleteTarget.id)
+      setDeleteTarget(null)
+      fetchProjects()
+    }
+  }
+
+  if (loading) return <Spinner />
+
+  return (
+    <div>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+        <div>
+          <h1 className="text-2xl font-bold font-display text-surface-900">Project Tracker</h1>
+          <p className="text-sm text-surface-500 mt-1">{projects.length} projects · {filtered.length} shown</p>
+        </div>
+        {isAdmin && (
+          <button onClick={() => { setEditProject(null); setShowForm(true) }}
+            className="flex items-center gap-2 px-4 py-2.5 bg-brand-600 text-white rounded-xl text-sm font-medium hover:bg-brand-700 transition-colors shadow-sm">
+            <Plus size={16} /> New Project
+          </button>
+        )}
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-col sm:flex-row gap-3 mb-6">
+        <div className="relative flex-1">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-surface-400" />
+          <input type="text" placeholder="Search projects or owners..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
+            className={`${inputCls} pl-9`} />
+        </div>
+        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className={`${selectCls} w-auto min-w-[140px]`}>
+          <option value="">All Statuses</option>
+          {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select value={filterPriority} onChange={e => setFilterPriority(e.target.value)} className={`${selectCls} w-auto min-w-[140px]`}>
+          <option value="">All Priorities</option>
+          {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+      </div>
+
+      {/* Table */}
+      <div className="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="bg-surface-50 border-b border-surface-200">
+                {['#', 'Project Name', 'Dept / Module', 'Owner', 'Priority', 'Status', 'Phase', 'Progress', 'Impact', isAdmin && 'Actions'].filter(Boolean).map(h => (
+                  <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-surface-500 uppercase tracking-wider whitespace-nowrap">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-surface-100">
+              {filtered.map(p => (
+                <tr key={p.id} className="project-row" onClick={() => navigate(`/projects/${p.id}`)}>
+                  <td className="px-4 py-3 text-sm font-mono text-surface-400">{p.project_number}</td>
+                  <td className="px-4 py-3">
+                    <p className="text-sm font-medium text-surface-800 max-w-xs truncate">{p.project_name}</p>
+                  </td>
+                  <td className="px-4 py-3 text-sm text-surface-600 max-w-[180px] truncate">{p.dept_module}</td>
+                  <td className="px-4 py-3 text-sm text-surface-600 whitespace-nowrap">{p.business_owner}</td>
+                  <td className="px-4 py-3"><PriorityBadge priority={p.priority} /></td>
+                  <td className="px-4 py-3"><StatusBadge status={p.status} /></td>
+                  <td className="px-4 py-3 text-sm text-surface-600">{p.phase}</td>
+                  <td className="px-4 py-3 w-36"><ProgressBar value={p.percent_complete || '0'} /></td>
+                  <td className="px-4 py-3 text-sm text-surface-600">{p.business_impact}</td>
+                  {isAdmin && (
+                    <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => { setEditProject(p); setShowForm(true) }}
+                          className="p-1.5 rounded-lg hover:bg-brand-50 text-surface-400 hover:text-brand-600 transition-colors">
+                          <Pencil size={14} />
+                        </button>
+                        <button onClick={() => setDeleteTarget(p)}
+                          className="p-1.5 rounded-lg hover:bg-red-50 text-surface-400 hover:text-red-500 transition-colors">
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {filtered.length === 0 && (
+          <EmptyState icon={FolderKanban} title="No projects found" description="Try adjusting your search or filter criteria." />
+        )}
+      </div>
+
+      {/* Project Form Modal */}
+      <ProjectFormModal open={showForm} project={editProject} onClose={() => { setShowForm(false); setEditProject(null) }} onSave={handleSave} />
+
+      {/* Delete Confirmation */}
+      <ConfirmDialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={handleDelete}
+        title="Delete Project" message={`Are you sure you want to delete "${deleteTarget?.project_name}"? This will also delete all milestones and risks associated with it.`} />
+    </div>
+  )
+}
+
+// ─── Project Form Modal ─────────────────────────────────────
+function ProjectFormModal({ open, project, onClose, onSave }) {
+  const [form, setForm] = useState({})
+
+  useEffect(() => {
+    if (project) {
+      setForm({ ...project })
+    } else {
+      setForm({ priority: 'Medium', status: 'On Track', phase: 'Initiation', business_impact: 'Medium', percent_complete: '0' })
+    }
+  }, [project, open])
+
+  const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }))
+
+  const handleSubmit = () => {
+    const { id, created_at, updated_at, project_number, ...data } = form
+    onSave(data)
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title={project ? 'Edit Project' : 'New Project'} wide>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <FormField label="Project Name *" className="md:col-span-2">
+          <input className={inputCls} value={form.project_name || ''} onChange={e => set('project_name', e.target.value)} placeholder="Enter project name" />
+        </FormField>
+        <FormField label="Objective / Goal" className="md:col-span-2">
+          <textarea className={textareaCls} rows={2} value={form.objective || ''} onChange={e => set('objective', e.target.value)} />
+        </FormField>
+        <FormField label="Dept / Module">
+          <input className={inputCls} value={form.dept_module || ''} onChange={e => set('dept_module', e.target.value)} />
+        </FormField>
+        <FormField label="Business Owner">
+          <input className={inputCls} value={form.business_owner || ''} onChange={e => set('business_owner', e.target.value)} />
+        </FormField>
+        <FormField label="Priority">
+          <select className={selectCls} value={form.priority || ''} onChange={e => set('priority', e.target.value)}>
+            {PRIORITIES.map(p => <option key={p}>{p}</option>)}
+          </select>
+        </FormField>
+        <FormField label="Status">
+          <select className={selectCls} value={form.status || ''} onChange={e => set('status', e.target.value)}>
+            {STATUSES.map(s => <option key={s}>{s}</option>)}
+          </select>
+        </FormField>
+        <FormField label="Phase">
+          <select className={selectCls} value={form.phase || ''} onChange={e => set('phase', e.target.value)}>
+            {PHASES.map(p => <option key={p}>{p}</option>)}
+          </select>
+        </FormField>
+        <FormField label="% Complete">
+          <input className={inputCls} value={form.percent_complete || ''} onChange={e => set('percent_complete', e.target.value)} placeholder="0-100 or Ongoing" />
+        </FormField>
+        <FormField label="Est. Start (YYYY-MM)">
+          <input className={inputCls} value={form.est_start || ''} onChange={e => set('est_start', e.target.value)} placeholder="2026-01" />
+        </FormField>
+        <FormField label="Start Date (YYYY-MM)">
+          <input className={inputCls} value={form.start_date || ''} onChange={e => set('start_date', e.target.value)} placeholder="2026-01" />
+        </FormField>
+        <FormField label="End Date (YYYY-MM)">
+          <input className={inputCls} value={form.end_date || ''} onChange={e => set('end_date', e.target.value)} placeholder="2026-12" />
+        </FormField>
+        <FormField label="Total Cost (KWD)">
+          <input className={inputCls} type="number" value={form.total_cost_kwd || ''} onChange={e => set('total_cost_kwd', e.target.value)} />
+        </FormField>
+        <FormField label="Business Impact">
+          <select className={selectCls} value={form.business_impact || ''} onChange={e => set('business_impact', e.target.value)}>
+            <option value="">—</option>
+            {IMPACTS.map(i => <option key={i}>{i}</option>)}
+          </select>
+        </FormField>
+        <FormField label="Cost Remarks">
+          <input className={inputCls} value={form.cost_remarks || ''} onChange={e => set('cost_remarks', e.target.value)} />
+        </FormField>
+        <FormField label="Dependencies" className="md:col-span-2">
+          <textarea className={textareaCls} rows={2} value={form.dependencies || ''} onChange={e => set('dependencies', e.target.value)} />
+        </FormField>
+        <FormField label="Key Risks" className="md:col-span-2">
+          <textarea className={textareaCls} rows={2} value={form.key_risks || ''} onChange={e => set('key_risks', e.target.value)} />
+        </FormField>
+        <FormField label="Mitigation" className="md:col-span-2">
+          <textarea className={textareaCls} rows={2} value={form.mitigation || ''} onChange={e => set('mitigation', e.target.value)} />
+        </FormField>
+        <FormField label="Notes / Updates" className="md:col-span-2">
+          <textarea className={textareaCls} rows={2} value={form.notes_updates || ''} onChange={e => set('notes_updates', e.target.value)} />
+        </FormField>
+        <FormField label="Actions Needed / Next Steps" className="md:col-span-2">
+          <textarea className={textareaCls} rows={2} value={form.actions_needed || ''} onChange={e => set('actions_needed', e.target.value)} />
+        </FormField>
+      </div>
+      <div className="flex gap-3 justify-end mt-6 pt-4 border-t border-surface-200">
+        <button onClick={onClose} className="px-4 py-2 rounded-lg border border-surface-200 text-surface-600 hover:bg-surface-50 font-medium text-sm">Cancel</button>
+        <button onClick={handleSubmit} disabled={!form.project_name}
+          className="flex items-center gap-2 px-5 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 font-medium text-sm disabled:opacity-40 transition-colors">
+          <Save size={14} /> {project ? 'Update' : 'Create'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+// ─── Project Detail ─────────────────────────────────────────
+function ProjectDetail() {
+  const { id } = useParams()
+  const { isAdmin } = useAuth()
+  const navigate = useNavigate()
+  const [project, setProject] = useState(null)
+  const [milestones, setMilestones] = useState([])
+  const [risks, setRisks] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [showMilestoneForm, setShowMilestoneForm] = useState(false)
+  const [editMilestone, setEditMilestone] = useState(null)
+  const [showRiskForm, setShowRiskForm] = useState(false)
+  const [editRisk, setEditRisk] = useState(null)
+  const [deleteMilestone, setDeleteMilestone] = useState(null)
+  const [deleteRisk, setDeleteRisk] = useState(null)
+  const [tab, setTab] = useState('milestones')
+
+  const fetchAll = useCallback(async () => {
+    const [{ data: p }, { data: m }, { data: r }] = await Promise.all([
+      supabase.from('projects').select('*').eq('id', id).single(),
+      supabase.from('milestones').select('*').eq('project_id', id).order('milestone_number'),
+      supabase.from('risks').select('*').eq('project_id', id).order('risk_number'),
+    ])
+    setProject(p)
+    setMilestones(m || [])
+    setRisks(r || [])
+    setLoading(false)
+  }, [id])
+
+  useEffect(() => { fetchAll() }, [fetchAll])
+
+  const saveMilestone = async (data) => {
+    if (editMilestone) {
+      await supabase.from('milestones').update(data).eq('id', editMilestone.id)
+    } else {
+      const maxNum = milestones.reduce((m, ms) => Math.max(m, ms.milestone_number || 0), 0)
+      await supabase.from('milestones').insert({ ...data, project_id: parseInt(id), milestone_number: maxNum + 1 })
+    }
+    setShowMilestoneForm(false)
+    setEditMilestone(null)
+    fetchAll()
+  }
+
+  const saveRisk = async (data) => {
+    if (editRisk) {
+      await supabase.from('risks').update(data).eq('id', editRisk.id)
+    } else {
+      const maxNum = risks.reduce((m, r) => Math.max(m, r.risk_number || 0), 0)
+      await supabase.from('risks').insert({ ...data, project_id: parseInt(id), risk_number: maxNum + 1 })
+    }
+    setShowRiskForm(false)
+    setEditRisk(null)
+    fetchAll()
+  }
+
+  const handleDeleteMilestone = async () => {
+    if (deleteMilestone) {
+      await supabase.from('milestones').delete().eq('id', deleteMilestone.id)
+      setDeleteMilestone(null)
+      fetchAll()
+    }
+  }
+
+  const handleDeleteRisk = async () => {
+    if (deleteRisk) {
+      await supabase.from('risks').delete().eq('id', deleteRisk.id)
+      setDeleteRisk(null)
+      fetchAll()
+    }
+  }
+
+  if (loading) return <Spinner />
+  if (!project) return <EmptyState icon={FolderKanban} title="Project not found" description="This project may have been deleted." action={<Link to="/projects" className="text-brand-600 text-sm font-medium">← Back to tracker</Link>} />
+
+  const completedMs = milestones.filter(m => m.development_status === 'Completed').length
+  const msProgress = milestones.length > 0 ? Math.round((completedMs / milestones.length) * 100) : 0
+
+  return (
+    <div>
+      {/* Header */}
+      <button onClick={() => navigate('/projects')} className="flex items-center gap-1.5 text-sm text-surface-500 hover:text-brand-600 mb-4 transition-colors">
+        <ArrowLeft size={16} /> Back to Project Tracker
+      </button>
+
+      <div className="bg-white rounded-2xl border border-surface-200 shadow-sm p-6 mb-6">
+        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+          <div className="flex-1">
+            <div className="flex items-center gap-3 mb-2">
+              <span className="text-xs font-mono text-surface-400 bg-surface-100 px-2 py-0.5 rounded">#{project.project_number}</span>
+              <PriorityBadge priority={project.priority} />
+              <StatusBadge status={project.status} />
+            </div>
+            <h1 className="text-xl font-bold font-display text-surface-900 mb-2">{project.project_name}</h1>
+            {project.objective && <p className="text-sm text-surface-600 leading-relaxed max-w-3xl">{project.objective}</p>}
+          </div>
+          <div className="flex flex-col items-end gap-2 min-w-[200px]">
+            <ProgressBar value={project.percent_complete || '0'} className="w-full" />
+            <div className="text-xs text-surface-500">Phase: <span className="font-medium text-surface-700">{project.phase}</span></div>
+          </div>
+        </div>
+
+        {/* Meta grid */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6 pt-6 border-t border-surface-100">
+          {[
+            { l: 'Department', v: project.dept_module },
+            { l: 'Business Owner', v: project.business_owner },
+            { l: 'Start Date', v: project.start_date },
+            { l: 'End Date', v: project.end_date },
+            { l: 'Business Impact', v: project.business_impact },
+            { l: 'Total Cost (KWD)', v: project.total_cost_kwd ? parseFloat(project.total_cost_kwd).toLocaleString() : '—' },
+            { l: 'Est. Start', v: project.est_start || '—' },
+            { l: 'Cost Remarks', v: project.cost_remarks || '—' },
+          ].map(({ l, v }) => (
+            <div key={l}>
+              <p className="text-xs text-surface-400 mb-0.5">{l}</p>
+              <p className="text-sm font-medium text-surface-700">{v || '—'}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Text sections */}
+        {[
+          { l: 'Dependencies', v: project.dependencies },
+          { l: 'Key Risks', v: project.key_risks },
+          { l: 'Mitigation', v: project.mitigation },
+          { l: 'Notes / Updates', v: project.notes_updates },
+          { l: 'Actions Needed', v: project.actions_needed },
+        ].filter(s => s.v).map(({ l, v }) => (
+          <div key={l} className="mt-4 pt-4 border-t border-surface-100">
+            <p className="text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1">{l}</p>
+            <p className="text-sm text-surface-700 leading-relaxed whitespace-pre-line">{v}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Milestone progress summary */}
+      {milestones.length > 0 && (
+        <div className="bg-white rounded-2xl border border-surface-200 shadow-sm p-6 mb-6">
+          <h3 className="text-sm font-semibold text-surface-700 mb-3">Milestone Progress</h3>
+          <div className="flex items-center gap-4">
+            <ProgressBar value={String(msProgress)} className="flex-1" />
+            <span className="text-sm text-surface-600">{completedMs} of {milestones.length} completed</span>
+          </div>
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="flex gap-1 mb-4 bg-surface-100 rounded-xl p-1 w-fit">
+        {[
+          { key: 'milestones', label: 'Key Milestones', icon: MilestoneIcon, count: milestones.length },
+          { key: 'risks', label: 'Risks & Issues', icon: AlertCircle, count: risks.length },
+        ].map(({ key, label, icon: Icon, count }) => (
+          <button key={key} onClick={() => setTab(key)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${tab === key ? 'bg-white text-surface-800 shadow-sm' : 'text-surface-500 hover:text-surface-700'}`}>
+            <Icon size={15} /> {label} <span className="text-xs bg-surface-200 px-1.5 py-0.5 rounded-full">{count}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Milestones Tab */}
+      {tab === 'milestones' && (
+        <div className="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
+          {isAdmin && (
+            <div className="px-4 py-3 border-b border-surface-100 flex justify-end">
+              <button onClick={() => { setEditMilestone(null); setShowMilestoneForm(true) }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 text-white rounded-lg text-xs font-medium hover:bg-brand-700 transition-colors">
+                <Plus size={13} /> Add Milestone
+              </button>
+            </div>
+          )}
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-surface-50 border-b border-surface-200">
+                  {['#', 'Deliverable', 'Target Date', 'Actual Date', 'Dev Status', 'UAT Status', 'Owner', isAdmin && 'Actions'].filter(Boolean).map(h => (
+                    <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-surface-500 uppercase tracking-wider whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-surface-100">
+                {milestones.map(m => (
+                  <tr key={m.id} className="hover:bg-surface-50 transition-colors">
+                    <td className="px-4 py-3 text-sm font-mono text-surface-400">{m.milestone_number}</td>
+                    <td className="px-4 py-3">
+                      <p className="text-sm font-medium text-surface-800">{m.deliverable}</p>
+                      {m.dependencies && <p className="text-xs text-surface-400 mt-0.5 max-w-xs truncate">{m.dependencies}</p>}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-surface-600">{m.target_date || '—'}</td>
+                    <td className="px-4 py-3 text-sm text-surface-600">{m.actual_date || '—'}</td>
+                    <td className="px-4 py-3"><DevStatusBadge status={m.development_status} /></td>
+                    <td className="px-4 py-3"><UatStatusBadge status={m.uat_status} /></td>
+                    <td className="px-4 py-3 text-sm text-surface-600">{m.owner || '—'}</td>
+                    {isAdmin && (
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => { setEditMilestone(m); setShowMilestoneForm(true) }}
+                            className="p-1.5 rounded-lg hover:bg-brand-50 text-surface-400 hover:text-brand-600 transition-colors"><Pencil size={13} /></button>
+                          <button onClick={() => setDeleteMilestone(m)}
+                            className="p-1.5 rounded-lg hover:bg-red-50 text-surface-400 hover:text-red-500 transition-colors"><Trash2 size={13} /></button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {milestones.length === 0 && (
+            <EmptyState icon={MilestoneIcon} title="No milestones yet" description={isAdmin ? "Add milestones to track deliverables for this project." : "No milestones have been added yet."}
+              action={isAdmin && <button onClick={() => setShowMilestoneForm(true)} className="text-brand-600 text-sm font-medium">+ Add first milestone</button>} />
+          )}
+        </div>
+      )}
+
+      {/* Risks Tab */}
+      {tab === 'risks' && (
+        <div className="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
+          {isAdmin && (
+            <div className="px-4 py-3 border-b border-surface-100 flex justify-end">
+              <button onClick={() => { setEditRisk(null); setShowRiskForm(true) }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 text-white rounded-lg text-xs font-medium hover:bg-brand-700 transition-colors">
+                <Plus size={13} /> Add Risk
+              </button>
+            </div>
+          )}
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-surface-50 border-b border-surface-200">
+                  {['#', 'Risk / Issue Description', 'Impact', 'Likelihood', 'Mitigation Action', 'Owner', isAdmin && 'Actions'].filter(Boolean).map(h => (
+                    <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-surface-500 uppercase tracking-wider whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-surface-100">
+                {risks.map(r => (
+                  <tr key={r.id} className="hover:bg-surface-50 transition-colors">
+                    <td className="px-4 py-3 text-sm font-mono text-surface-400">{r.risk_number}</td>
+                    <td className="px-4 py-3 text-sm text-surface-800 max-w-xs">{r.description}</td>
+                    <td className="px-4 py-3">{r.impact && <Badge colors={PRIORITY_COLORS[r.impact] || PRIORITY_COLORS['Medium']}>{r.impact}</Badge>}</td>
+                    <td className="px-4 py-3">{r.likelihood && <Badge colors={PRIORITY_COLORS[r.likelihood] || PRIORITY_COLORS['Medium']}>{r.likelihood}</Badge>}</td>
+                    <td className="px-4 py-3 text-sm text-surface-600 max-w-xs">{r.mitigation_action || '—'}</td>
+                    <td className="px-4 py-3 text-sm text-surface-600">{r.owner || '—'}</td>
+                    {isAdmin && (
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => { setEditRisk(r); setShowRiskForm(true) }}
+                            className="p-1.5 rounded-lg hover:bg-brand-50 text-surface-400 hover:text-brand-600 transition-colors"><Pencil size={13} /></button>
+                          <button onClick={() => setDeleteRisk(r)}
+                            className="p-1.5 rounded-lg hover:bg-red-50 text-surface-400 hover:text-red-500 transition-colors"><Trash2 size={13} /></button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {risks.length === 0 && (
+            <EmptyState icon={AlertCircle} title="No risks logged" description={isAdmin ? "Log risks and issues for this project." : "No risks have been logged yet."}
+              action={isAdmin && <button onClick={() => setShowRiskForm(true)} className="text-brand-600 text-sm font-medium">+ Add first risk</button>} />
+          )}
+        </div>
+      )}
+
+      {/* Modals */}
+      <MilestoneFormModal open={showMilestoneForm} milestone={editMilestone} onClose={() => { setShowMilestoneForm(false); setEditMilestone(null) }} onSave={saveMilestone} />
+      <RiskFormModal open={showRiskForm} risk={editRisk} onClose={() => { setShowRiskForm(false); setEditRisk(null) }} onSave={saveRisk} />
+      <ConfirmDialog open={!!deleteMilestone} onClose={() => setDeleteMilestone(null)} onConfirm={handleDeleteMilestone}
+        title="Delete Milestone" message={`Delete "${deleteMilestone?.deliverable}"?`} />
+      <ConfirmDialog open={!!deleteRisk} onClose={() => setDeleteRisk(null)} onConfirm={handleDeleteRisk}
+        title="Delete Risk" message={`Delete this risk/issue entry?`} />
+    </div>
+  )
+}
+
+function DevStatusBadge({ status }) {
+  const map = {
+    'Not Started': { bg: 'bg-slate-50', text: 'text-slate-500', border: 'border-slate-200' },
+    'In Progress': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
+    'Completed': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
+    'Blocked': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
+  }
+  if (!status) return <span className="text-xs text-surface-400">—</span>
+  return <Badge colors={map[status] || map['Not Started']}>{status}</Badge>
+}
+
+function UatStatusBadge({ status }) {
+  const map = {
+    'Not Started': { bg: 'bg-slate-50', text: 'text-slate-500', border: 'border-slate-200' },
+    'Pending': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
+    'In Progress': { bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200' },
+    'Passed': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
+    'Failed': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
+  }
+  if (!status) return <span className="text-xs text-surface-400">—</span>
+  return <Badge colors={map[status] || map['Not Started']}>{status}</Badge>
+}
+
+// ─── Milestone Form ─────────────────────────────────────────
+function MilestoneFormModal({ open, milestone, onClose, onSave }) {
+  const [form, setForm] = useState({})
+  useEffect(() => {
+    if (milestone) setForm({ ...milestone })
+    else setForm({ development_status: 'Not Started', uat_status: 'Not Started' })
+  }, [milestone, open])
+  const set = (k, v) => setForm(p => ({ ...p, [k]: v }))
+  const submit = () => {
+    const { id, created_at, updated_at, project_id, milestone_number, ...data } = form
+    onSave(data)
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title={milestone ? 'Edit Milestone' : 'New Milestone'}>
+      <div className="space-y-4">
+        <FormField label="Deliverable *">
+          <input className={inputCls} value={form.deliverable || ''} onChange={e => set('deliverable', e.target.value)} />
+        </FormField>
+        <div className="grid grid-cols-2 gap-4">
+          <FormField label="Target Date">
+            <input className={inputCls} type="date" value={form.target_date || ''} onChange={e => set('target_date', e.target.value)} />
+          </FormField>
+          <FormField label="Actual Date">
+            <input className={inputCls} type="date" value={form.actual_date || ''} onChange={e => set('actual_date', e.target.value)} />
+          </FormField>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <FormField label="Development Status">
+            <select className={selectCls} value={form.development_status || ''} onChange={e => set('development_status', e.target.value)}>
+              {DEV_STATUSES.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </FormField>
+          <FormField label="UAT Status">
+            <select className={selectCls} value={form.uat_status || ''} onChange={e => set('uat_status', e.target.value)}>
+              {UAT_STATUSES.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </FormField>
+        </div>
+        <FormField label="Owner">
+          <input className={inputCls} value={form.owner || ''} onChange={e => set('owner', e.target.value)} />
+        </FormField>
+        <FormField label="Dependencies">
+          <textarea className={textareaCls} rows={2} value={form.dependencies || ''} onChange={e => set('dependencies', e.target.value)} />
+        </FormField>
+        <FormField label="Remarks">
+          <textarea className={textareaCls} rows={2} value={form.remarks || ''} onChange={e => set('remarks', e.target.value)} />
+        </FormField>
+      </div>
+      <div className="flex gap-3 justify-end mt-6 pt-4 border-t border-surface-200">
+        <button onClick={onClose} className="px-4 py-2 rounded-lg border border-surface-200 text-surface-600 hover:bg-surface-50 font-medium text-sm">Cancel</button>
+        <button onClick={submit} disabled={!form.deliverable}
+          className="flex items-center gap-2 px-5 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 font-medium text-sm disabled:opacity-40 transition-colors">
+          <Save size={14} /> {milestone ? 'Update' : 'Create'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+// ─── Risk Form ──────────────────────────────────────────────
+function RiskFormModal({ open, risk, onClose, onSave }) {
+  const [form, setForm] = useState({})
+  useEffect(() => {
+    if (risk) setForm({ ...risk })
+    else setForm({ impact: 'Medium', likelihood: 'Medium' })
+  }, [risk, open])
+  const set = (k, v) => setForm(p => ({ ...p, [k]: v }))
+  const submit = () => {
+    const { id, created_at, updated_at, project_id, risk_number, ...data } = form
+    onSave(data)
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title={risk ? 'Edit Risk' : 'New Risk'}>
+      <div className="space-y-4">
+        <FormField label="Risk / Issue Description *">
+          <textarea className={textareaCls} rows={3} value={form.description || ''} onChange={e => set('description', e.target.value)} />
+        </FormField>
+        <div className="grid grid-cols-2 gap-4">
+          <FormField label="Impact">
+            <select className={selectCls} value={form.impact || ''} onChange={e => set('impact', e.target.value)}>
+              {IMPACTS.map(i => <option key={i}>{i}</option>)}
+            </select>
+          </FormField>
+          <FormField label="Likelihood">
+            <select className={selectCls} value={form.likelihood || ''} onChange={e => set('likelihood', e.target.value)}>
+              {IMPACTS.map(i => <option key={i}>{i}</option>)}
+            </select>
+          </FormField>
+        </div>
+        <FormField label="Mitigation Action">
+          <textarea className={textareaCls} rows={2} value={form.mitigation_action || ''} onChange={e => set('mitigation_action', e.target.value)} />
+        </FormField>
+        <FormField label="Owner">
+          <input className={inputCls} value={form.owner || ''} onChange={e => set('owner', e.target.value)} />
+        </FormField>
+      </div>
+      <div className="flex gap-3 justify-end mt-6 pt-4 border-t border-surface-200">
+        <button onClick={onClose} className="px-4 py-2 rounded-lg border border-surface-200 text-surface-600 hover:bg-surface-50 font-medium text-sm">Cancel</button>
+        <button onClick={submit} disabled={!form.description}
+          className="flex items-center gap-2 px-5 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 font-medium text-sm disabled:opacity-40 transition-colors">
+          <Save size={14} /> {risk ? 'Update' : 'Create'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+// ─── Gantt Chart ────────────────────────────────────────────
+function GanttChartPage() {
+  const [projects, setProjects] = useState([])
+  const [loading, setLoading] = useState(true)
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    supabase.from('projects').select('*').order('project_number').then(({ data }) => {
+      setProjects(data || [])
+      setLoading(false)
+    })
+  }, [])
+
+  if (loading) return <Spinner />
+
+  // Date range: find min start and max end
+  const parseDate = (d) => {
+    if (!d) return null
+    if (d.length === 7) return new Date(d + '-01')
+    return new Date(d)
+  }
+
+  const allDates = projects.flatMap(p => [parseDate(p.start_date), parseDate(p.end_date)]).filter(Boolean)
+  if (allDates.length === 0) return <EmptyState icon={GanttIcon} title="No date data" description="Projects need start/end dates for the Gantt chart." />
+
+  const minDate = new Date(Math.min(...allDates.map(d => d.getTime())))
+  const maxDate = new Date(Math.max(...allDates.map(d => d.getTime())))
+
+  // Extend range to full months
+  minDate.setDate(1)
+  maxDate.setMonth(maxDate.getMonth() + 1, 0)
+
+  // Generate months
+  const months = []
+  const curr = new Date(minDate)
+  while (curr <= maxDate) {
+    months.push(new Date(curr))
+    curr.setMonth(curr.getMonth() + 1)
+  }
+
+  const totalMs = maxDate.getTime() - minDate.getTime()
+  const getPos = (date) => ((date.getTime() - minDate.getTime()) / totalMs) * 100
+
+  const now = new Date()
+  const todayPos = now >= minDate && now <= maxDate ? getPos(now) : null
+
+  const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+  // Group months by year
+  const years = {}
+  months.forEach(m => {
+    const y = m.getFullYear()
+    if (!years[y]) years[y] = []
+    years[y].push(m)
+  })
+
+  const ROW_H = 36
+
+  return (
+    <div>
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold font-display text-surface-900">Gantt Chart</h1>
+        <p className="text-sm text-surface-500 mt-1">Project timeline — auto-updates from project data</p>
+      </div>
+
+      {/* Legend */}
+      <div className="flex flex-wrap gap-4 mb-4">
+        {Object.entries(STATUS_COLORS).map(([name, c]) => (
+          <div key={name} className="flex items-center gap-1.5 text-xs text-surface-600">
+            <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: c.hex }} /> {name}
+          </div>
+        ))}
+        {todayPos !== null && (
+          <div className="flex items-center gap-1.5 text-xs text-surface-600">
+            <div className="w-3 h-0.5 bg-red-500" /> Today
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <div className="min-w-[1100px]">
+            {/* Header */}
+            <div className="flex border-b border-surface-200">
+              <div className="w-[320px] min-w-[320px] bg-surface-50 border-r border-surface-200 flex">
+                <div className="w-10 px-2 py-2 text-[10px] font-semibold text-surface-400 flex items-end">#</div>
+                <div className="flex-1 px-3 py-2 text-[10px] font-semibold text-surface-400 uppercase flex items-end">Project</div>
+                <div className="w-20 px-2 py-2 text-[10px] font-semibold text-surface-400 uppercase flex items-end">Status</div>
+                <div className="w-12 px-2 py-2 text-[10px] font-semibold text-surface-400 uppercase flex items-end text-right">Done</div>
+              </div>
+              <div className="flex-1 relative">
+                {/* Year headers */}
+                <div className="flex border-b border-surface-100">
+                  {Object.entries(years).map(([year, ms]) => (
+                    <div key={year} className="text-center text-[10px] font-bold text-surface-600 py-1 border-r border-surface-100 bg-surface-50"
+                      style={{ width: `${(ms.length / months.length) * 100}%` }}>
+                      {year}
+                    </div>
+                  ))}
+                </div>
+                {/* Month headers */}
+                <div className="flex">
+                  {months.map((m, i) => (
+                    <div key={i} className="text-center text-[9px] text-surface-400 py-1.5 border-r border-surface-100"
+                      style={{ width: `${100 / months.length}%` }}>
+                      {MONTH_NAMES[m.getMonth()]}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Rows */}
+            {projects.map((p, idx) => {
+              const start = parseDate(p.start_date)
+              const end = parseDate(p.end_date)
+              if (!start || !end) return null
+
+              const left = getPos(start)
+              const right = getPos(end)
+              const width = Math.max(right - left, 1)
+              const pct = p.percent_complete === 'Ongoing' ? 50 : parseInt(p.percent_complete) || 0
+              const color = STATUS_COLORS[p.status]?.hex || '#94a3b8'
+
+              return (
+                <div key={p.id} className="flex border-b border-surface-50 hover:bg-surface-50/50 cursor-pointer transition-colors"
+                  style={{ height: ROW_H }} onClick={() => navigate(`/projects/${p.id}`)}>
+                  <div className="w-[320px] min-w-[320px] border-r border-surface-100 flex items-center">
+                    <div className="w-10 px-2 text-[10px] font-mono text-surface-400">{p.project_number}</div>
+                    <div className="flex-1 px-2 text-xs font-medium text-surface-700 truncate">{p.project_name}</div>
+                    <div className="w-20 px-1 flex items-center justify-center">
+                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
+                    </div>
+                    <div className="w-12 px-2 text-[10px] text-surface-500 text-right font-mono">{p.percent_complete === 'Ongoing' ? '∞' : `${pct}%`}</div>
+                  </div>
+                  <div className="flex-1 relative">
+                    {/* Month grid lines */}
+                    {months.map((_, i) => (
+                      <div key={i} className="absolute top-0 bottom-0 border-r border-surface-50"
+                        style={{ left: `${(i / months.length) * 100}%` }} />
+                    ))}
+                    {/* Today line */}
+                    {todayPos !== null && (
+                      <div className="absolute top-0 bottom-0 w-px bg-red-400 z-10" style={{ left: `${todayPos}%` }} />
+                    )}
+                    {/* Bar */}
+                    <div className="absolute top-1/2 -translate-y-1/2 gantt-bar rounded-md overflow-hidden"
+                      style={{ left: `${left}%`, width: `${width}%`, height: 16 }}>
+                      {/* Background (remaining) */}
+                      <div className="absolute inset-0 rounded-md opacity-25" style={{ backgroundColor: color }} />
+                      {/* Fill (completed) */}
+                      <div className="absolute inset-y-0 left-0 rounded-md opacity-80" style={{ backgroundColor: color, width: `${pct}%` }} />
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Login Page ─────────────────────────────────────────────
+function LoginPage() {
+  const { signIn, isAdmin } = useAuth()
+  const navigate = useNavigate()
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (isAdmin) navigate('/')
+  }, [isAdmin, navigate])
+
+  const handleLogin = async (e) => {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    try {
+      await signIn(email, password)
+      navigate('/')
+    } catch (err) {
+      setError(err.message || 'Invalid credentials')
+    }
+    setLoading(false)
+  }
+
+  return (
+    <div className="flex items-center justify-center min-h-[70vh]">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <div className="w-14 h-14 rounded-2xl bg-brand-600 flex items-center justify-center mx-auto mb-4">
+            <Shield className="text-white" size={24} />
+          </div>
+          <h1 className="text-2xl font-bold font-display text-surface-900">Admin Login</h1>
+          <p className="text-sm text-surface-500 mt-1">Sign in to manage projects</p>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-surface-200 shadow-sm p-6">
+          <form onSubmit={handleLogin} className="space-y-4">
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">{error}</div>
+            )}
+            <FormField label="Email">
+              <input className={inputCls} type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="admin@company.com" required />
+            </FormField>
+            <FormField label="Password">
+              <input className={inputCls} type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" required />
+            </FormField>
+            <button type="submit" disabled={loading}
+              className="w-full py-2.5 bg-brand-600 text-white rounded-xl font-medium text-sm hover:bg-brand-700 transition-colors disabled:opacity-50">
+              {loading ? 'Signing in...' : 'Sign In'}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Admin Users Page ───────────────────────────────────────
+function AdminUsersPage() {
+  const { isAdmin, user } = useAuth()
+  const navigate = useNavigate()
+  const [users, setUsers] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [showCreate, setShowCreate] = useState(false)
+  const [newEmail, setNewEmail] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+  const [resetTarget, setResetTarget] = useState(null)
+  const [resetPassword, setResetPassword] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState(null)
+
+  useEffect(() => {
+    if (!isAdmin) { navigate('/login'); return }
+    fetchUsers()
+  }, [isAdmin, navigate])
+
+  const fetchUsers = async () => {
+    // Note: Listing users requires a service_role key via Edge Function.
+    // For simplicity, we'll store admin emails in a simple approach.
+    // In production, use a Supabase Edge Function for user management.
+    setLoading(false)
+  }
+
+  const handleCreateUser = async () => {
+    setError('')
+    setMessage('')
+    try {
+      // This uses the admin API - requires Edge Function in production.
+      // For the demo, we use the standard signup.
+      const { data, error: err } = await supabase.auth.signUp({
+        email: newEmail,
+        password: newPassword,
+      })
+      if (err) throw err
+      setMessage(`User ${newEmail} created successfully! They can now log in.`)
+      setNewEmail('')
+      setNewPassword('')
+      setShowCreate(false)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const handleResetPassword = async () => {
+    setError('')
+    setMessage('')
+    try {
+      // Send password reset email
+      const { error: err } = await supabase.auth.resetPasswordForEmail(resetTarget)
+      if (err) throw err
+      setMessage(`Password reset email sent to ${resetTarget}`)
+      setResetTarget(null)
+      setResetPassword('')
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  if (!isAdmin) return null
+
+  return (
+    <div className="max-w-2xl mx-auto">
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold font-display text-surface-900">User Management</h1>
+        <p className="text-sm text-surface-500 mt-1">Create and manage admin users</p>
+      </div>
+
+      {message && <div className="bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm rounded-lg px-4 py-3 mb-4">{message}</div>}
+      {error && <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3 mb-4">{error}</div>}
+
+      {/* Current user */}
+      <div className="bg-white rounded-2xl border border-surface-200 shadow-sm p-6 mb-6">
+        <h3 className="text-sm font-semibold text-surface-700 mb-3">Current Session</h3>
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-brand-100 flex items-center justify-center">
+            <Shield className="text-brand-600" size={18} />
+          </div>
+          <div>
+            <p className="text-sm font-medium text-surface-800">{user?.email}</p>
+            <p className="text-xs text-surface-500">Logged in as admin</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Create new user */}
+      <div className="bg-white rounded-2xl border border-surface-200 shadow-sm p-6 mb-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold text-surface-700">Create New Admin User</h3>
+          <button onClick={() => setShowCreate(!showCreate)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 text-white rounded-lg text-xs font-medium hover:bg-brand-700 transition-colors">
+            <Plus size={13} /> New User
+          </button>
+        </div>
+
+        {showCreate && (
+          <div className="space-y-4 pt-4 border-t border-surface-100">
+            <FormField label="Email">
+              <input className={inputCls} type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} placeholder="user@company.com" />
+            </FormField>
+            <FormField label="Password">
+              <input className={inputCls} type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Min 6 characters" />
+            </FormField>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setShowCreate(false)} className="px-4 py-2 rounded-lg border border-surface-200 text-surface-600 hover:bg-surface-50 font-medium text-sm">Cancel</button>
+              <button onClick={handleCreateUser} disabled={!newEmail || !newPassword || newPassword.length < 6}
+                className="px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700 font-medium text-sm disabled:opacity-40 transition-colors">
+                Create User
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Reset password */}
+      <div className="bg-white rounded-2xl border border-surface-200 shadow-sm p-6 mb-6">
+        <h3 className="text-sm font-semibold text-surface-700 mb-4">Reset User Password</h3>
+        <p className="text-sm text-surface-500 mb-4">Enter the email address of the user whose password you want to reset. They will receive a reset link via email.</p>
+        <div className="flex gap-3">
+          <input className={`${inputCls} flex-1`} type="email" value={resetTarget || ''} onChange={e => setResetTarget(e.target.value)} placeholder="user@company.com" />
+          <button onClick={handleResetPassword} disabled={!resetTarget}
+            className="px-4 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 font-medium text-sm disabled:opacity-40 transition-colors whitespace-nowrap">
+            Send Reset Link
+          </button>
+        </div>
+      </div>
+
+      {/* Info */}
+      <div className="bg-brand-50 border border-brand-200 rounded-2xl p-6">
+        <h3 className="text-sm font-semibold text-brand-800 mb-2">Admin User Management Notes</h3>
+        <ul className="text-sm text-brand-700 space-y-1.5">
+          <li>• New users can sign in immediately after creation</li>
+          <li>• All authenticated users have full admin access to manage projects</li>
+          <li>• Password resets are sent via email through Supabase Auth</li>
+          <li>• To delete users, use the Supabase Dashboard → Authentication → Users</li>
+          <li>• For advanced user management, consider adding a Supabase Edge Function</li>
+        </ul>
+      </div>
+    </div>
+  )
+}
+
+// ─── Main App ───────────────────────────────────────────────
+export default function App() {
+  return (
+    <AuthProvider>
+      <Layout />
+    </AuthProvider>
+  )
+}
