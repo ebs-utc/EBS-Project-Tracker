@@ -2,12 +2,13 @@
   "name": "EBS Project Tracker",
   "short_name": "EBS Tracker",
   "description": "Project portfolio tracking & roadmap",
-  "start_url": "./",
+  "start_url": "./index.html",
+  "id": "/",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#f8f9fc",
-  "theme_color": "#4263eb",
+  "background_color": "#0f1320",
+  "theme_color": "#0f1320",
   "icons": [
     {
       "src": "./icon-192.png",
